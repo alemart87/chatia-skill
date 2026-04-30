@@ -1,35 +1,52 @@
-# Chatia Skill
+# Chatia Skills
 
-Skill for Claude Code (and any compatible coding agent that supports the
-[Skills](https://www.npmjs.com/package/skills) catalog) to work on
-[Chatia](https://chatia.pro) — a SaaS that builds AI agents for
-freelancers.
+Skills for Claude Code (and any compatible coding agent that supports
+the [Skills](https://www.npmjs.com/package/skills) catalog) to build
+on top of [Chatia](https://chatia.pro) — a SaaS that builds AI agents
+for freelancers, with a public REST API and signed webhooks.
 
-## What you get
+## What's in this repo
 
-When this skill is loaded, the agent gets context about:
+Three composable skills, install whichever ones fit your workflow:
 
-- Chatia's design language (premium / minimal / monochromatic).
-- The canonical structure for writing agent prompts.
-- API endpoints, auth model and pricing tiers.
-- Tool-calling discipline (date injection, honesty rule, anti-hallucination).
-- UI rules for cards, pills, motion, color usage.
-- Security non-negotiables (key hygiene, signature verification,
-  multi-tenant isolation, prompt-injection defense).
-- The actual stack (FastAPI 0.115 + Next.js 16 + Postgres + Polar + Kapso
-  + Resend) so suggestions are grounded.
+| Skill | Use when… |
+|---|---|
+| **`chatia`** | The general overview — Chatia design language, prompt structure, REST endpoints, security rules, stack reference. Start here if you only install one. |
+| **`chatia-build-agent`** | You're writing code that creates / configures / publishes Chatia agents from outside Chatia. Step-by-step recipes with curl + Python + Node. |
+| **`chatia-webhooks`** | You're consuming Chatia webhooks. HMAC signature verification (constant-time), replay protection, idempotency, retry behaviour, full event catalog. |
+
+`chatia-build-agent` and `chatia-webhooks` are companions of `chatia`
+— they go deeper into the two domains where most external developers
+need exact code.
 
 ## Install
 
-### From GitHub (recommended for collaborators)
+### From GitHub (recommended)
 
 ```bash
+# General overview
 npx skills add alemart87/chatia-skill --skill chatia -a claude-code -g -y
+
+# How to build agents from your code
+npx skills add alemart87/chatia-skill --skill chatia-build-agent -a claude-code -g -y
+
+# How to consume webhooks safely
+npx skills add alemart87/chatia-skill --skill chatia-webhooks -a claude-code -g -y
 ```
 
-> Replace `alemart87` with your GitHub user if you fork the repo.
+You can install all three at once if you're going to integrate
+end-to-end. They don't conflict — different triggers in their
+descriptions, no overlap.
 
-### Local install (during development)
+### Other coding agents
+
+Replace `-a claude-code` with `-a codex` or `-a cursor`:
+
+```bash
+npx skills add alemart87/chatia-skill --skill chatia-build-agent -a cursor -g -y
+```
+
+### Local development (this repo)
 
 From the cloned repo root:
 
@@ -37,67 +54,67 @@ From the cloned repo root:
 npx skills add . --skill chatia -a claude-code -g -y
 ```
 
-That points Claude Code at the `skills/chatia/SKILL.md` in your working
-copy so you can iterate without committing.
-
-### Install on Codex / Cursor / other agents
-
-```bash
-# Codex
-npx skills add alemart87/chatia-skill --skill chatia -a codex -g -y
-
-# Cursor
-npx skills add alemart87/chatia-skill --skill chatia -a cursor -g -y
-```
+That points your agent at the local `skills/<name>/SKILL.md` so you
+can iterate without committing.
 
 ## Verify
 
 After install, in any Claude Code session:
 
 ```
-Use the Chatia skill to improve this sales agent prompt.
+Use chatia-build-agent to create a sales agent with the calendar tools
+and webhooks pointing at https://my-app.com/hooks/chatia.
 ```
 
-Or:
+If the skill loaded correctly, the agent will:
 
-```
-Use the Chatia skill to make these agent cards look enterprise.
-```
+- Show the exact `POST /api/developers/agents` body with `tools`
+  including `create_calendar_event`, `list_availability`,
+  `capture_lead`.
+- Walk through `POST /api/developers/webhooks` with the right `events`
+  array.
+- Reference signature verification from `chatia-webhooks` (if also
+  installed).
 
-If the skill loaded correctly, the agent will reference Chatia's design
-rules (monochromatic palette, mono labels, hairline borders) and the
-canonical prompt structure (identity / goal / capabilities / tools /
-tone / rules / escalation).
+## What these skills do NOT do
 
-## What this skill does NOT do
-
-- It does not run code or hit APIs on its own — it is read-only context.
-- It does not include Chatia's full endpoint catalog (40+ routes); for
-  that, point your agent at `https://chatia.pro/SKILL.md`.
-- It does not bundle authentication credentials. You still need a JWT
+- They don't run code or hit APIs on their own — they're read-only
+  context.
+- They don't include authentication credentials. You still need a JWT
   or `CHATIA_API_KEY` to call the API.
+- They don't bundle a CLI; install the skill in your coding agent and
+  let it generate code.
 
 ## Repo layout
 
 ```
 chatia-skill/
-├── README.md                  ← this file
+├── README.md                            ← this file
 └── skills/
-    └── chatia/
-        └── SKILL.md           ← the actual skill content
+    ├── chatia/
+    │   └── SKILL.md                     ← general overview
+    ├── chatia-build-agent/
+    │   └── SKILL.md                     ← build agents from your code
+    └── chatia-webhooks/
+        └── SKILL.md                     ← consume webhooks safely
 ```
 
 That structure is fixed — `npx skills add` looks for
 `skills/<name>/SKILL.md` from the repo root.
 
-## Updating the skill
+## Updating
 
-1. Edit `skills/chatia/SKILL.md`.
-2. Bump anything API-related against the live `https://chatia.pro/SKILL.md`.
+1. Edit the SKILL.md files in this repo.
+2. Bump `version` in the frontmatter (semver-ish — bump on breaking
+   changes to anchors people might link).
 3. Commit + push to `main`.
-4. Re-run `npx skills add alemart87/chatia-skill --skill chatia -a claude-code -g -y`
-   on each machine — `npx skills` does not auto-update by default.
+4. Re-run `npx skills add alemart87/chatia-skill --skill <name> ...`
+   on each machine — `npx skills` does not auto-update.
+
+For Chatia API additions (new endpoints, new events), the live source
+of truth is `https://chatia.pro/SKILL.md`. Keep this repo aligned with
+that file when shipping new product surface.
 
 ## License
 
-MIT. Use freely, attribution welcome but not required.
+MIT. Use freely; attribution welcome but not required.
