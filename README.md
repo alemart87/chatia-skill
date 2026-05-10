@@ -101,7 +101,7 @@ https://www.chatia.pro/AGENTS.md
 
 That's a ~210-line concentrated version designed to be a system
 prompt context for AI agents. The full SKILL.md (this repo) is
-~885 lines with deeper detail (data models, multi-language recipes,
+~1166 lines with deeper detail (data models, multi-language recipes,
 full webhook signature verification examples).
 
 ## What this skill does NOT do
@@ -121,7 +121,7 @@ chatia-skill/
 README.md              <- this file
 skills/
   chatia/
-    SKILL.md           <- the all-in-one skill (~885 lines)
+    SKILL.md           <- the all-in-one skill (~1166 lines)
 ```
 
 That structure is fixed — `npx skills add` looks for
@@ -157,6 +157,7 @@ aligned with that file when shipping new product surface.
 
 | Version | Date | Changes |
 |---|---|---|
+| 0.4 | 2026-05-09 | +Custom HTTP webhook tools section (the owner defines their own tools that hit their API). +Composio integrations OAuth flow end-to-end (25+ toolkits, 5 meta-tools model, billing x5 markup). +Meta direct webhooks for Facebook/Instagram/Messenger inbound (1 platform Meta App, auto-subscribe Pages, anti-loop filters). +Telegram direct webhooks setup. ~280 LOC added, total ~1166 LOC. |
 | 0.3 | 2026-05-09 | +27 events (sale.* added), enriched response shape (widget_snippet, wordpress_plugin_url, dashboard_url absolute), rate limits per API key documented (30/min agents, 120/min events), AGENTS.md cross-link, onboarding from zero, multi-language recipes (Python/Node), error table with retry pattern, vertical to tools mapping. |
 | 0.2 | 2026-04 | Initial public release. |
 

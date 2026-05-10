@@ -1,7 +1,7 @@
 ---
 name: chatia
 description: Use this skill when working with Chatia — a SaaS that builds AI agents (chatbot flows, WhatsApp agents, Instagram/Messenger/Telegram agents, sales/support agents) and exposes a developer REST API at /api/v1 + /api/developers + an OpenAI-compatible /api/v1/chat/completions endpoint with HMAC-signed webhooks. Covers (1) onboarding from zero — registration + API key creation + setup; (2) end-to-end recipes to CREATE agents from external code with curl + Python + Node, where one POST returns chat_url + dashboard_url + widget_snippet + wordpress_plugin_url ready to paste; (3) deep-dive on CONSUMING webhooks — HMAC signature verification, replay protection, full event catalog (27 types including agent.sale.*); (4) rate limits per API key (30/min for agent creation, 120/min for events); (5) embed targets HTML / WordPress (official plugin) / Shopify / Wix; (6) 25+ OAuth integrations via Composio. Use whenever the user mentions creating, deploying, or programmatically managing a Chatia agent, embedding the Chatia chat widget, consuming Chatia events, or building UI/integrations against the Chatia API.
-version: 0.3
+version: 0.4
 ---
 
 # Chatia · Skill for AI agents
@@ -245,6 +245,287 @@ garantizada via `idempotency_key=appt-reminder-{id}-{window}` en Resend.
 
 - **`http_request`** `{ endpoint (https), method?, payload? }` — escapa
   para integraciones custom del owner.
+
+### Custom HTTP webhook tools (feature de poder — el owner define sus propias tools)
+
+Cuando los builtins (~25 tools nativas) y Composio (1000+ apps) no
+cubren un caso del owner, este puede definir **tools custom** que pegan
+HTTP a su propia API. Ejemplo: tool `crear_pedido(producto, cantidad,
+cliente)` que el agente invoca y dispara `POST https://miapi.com/orders`
+con un Bearer token.
+
+El agente las ve como tools nativas — invoca `crear_pedido` y el
+backend de Chatia hace el HTTP request al endpoint del owner con los
+args que el LLM le pasó + auth + `_meta` injectado.
+
+#### Modelo de datos
+
+Filas en `agent_tools` con `config.kind == "http_webhook"`:
+
+```jsonc
+{
+  "kind": "http_webhook",
+  "url": "https://api.miempresa.com/orders",
+  "method": "POST",                     // GET | POST | PUT | PATCH | DELETE
+  "headers": { "X-Tenant": "acme" },     // opcional
+  "auth": {                               // opcional
+    "type": "bearer",                     // "bearer" | "header"
+    "token": "secret_xxx",                // jamás se expone en GET responses
+    "header_name": "X-API-Key"            // solo si type=header
+  },
+  "timeout_s": 15,                        // default 15, max 60
+  "include_meta": true                    // default true → inyecta
+                                          // _meta:{agent_id,conversation_id} al body
+}
+```
+
+El campo `schema` de `agent_tools` (JSON) guarda el JSON Schema de los
+`parameters` que el LLM debe pasarle a la tool — exactamente igual que
+un builtin.
+
+#### Endpoints CRUD (auth: session JWT del owner)
+
+```
+GET    /api/agents/{id}/custom-tools                 — list (oculta el token)
+POST   /api/agents/{id}/custom-tools                 — create (valida URL, no permite collision con builtins)
+PATCH  /api/agents/{id}/custom-tools/{tool_id}       — update (preserva token si viene vacío)
+DELETE /api/agents/{id}/custom-tools/{tool_id}       — delete
+```
+
+#### Ejemplo: crear una tool custom
+
+```bash
+curl -X POST https://www.chatia.pro/api/agents/42/custom-tools \
+  -H "Authorization: Bearer <SESSION_JWT>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "crear_pedido",
+    "display_name": "Crear pedido",
+    "description": "Crea un pedido en el ERP del owner cuando el cliente confirma compra.",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "producto": { "type": "string" },
+        "cantidad": { "type": "integer" },
+        "cliente_email": { "type": "string" }
+      },
+      "required": ["producto", "cantidad", "cliente_email"]
+    },
+    "config": {
+      "kind": "http_webhook",
+      "url": "https://api.miempresa.com/orders",
+      "method": "POST",
+      "auth": { "type": "bearer", "token": "secret_xxx" },
+      "timeout_s": 15,
+      "include_meta": true
+    }
+  }'
+```
+
+Cuando el agente invoca `crear_pedido({producto:"X", cantidad:2, cliente_email:"foo@bar"})`,
+el backend hace:
+
+```
+POST https://api.miempresa.com/orders
+Authorization: Bearer secret_xxx
+Content-Type: application/json
+
+{
+  "producto": "X",
+  "cantidad": 2,
+  "cliente_email": "foo@bar",
+  "_meta": { "agent_id": 42, "agent_name": "Soporte", "conversation_id": 108 }
+}
+```
+
+#### Defensas baked-in
+
+- **Anti-SSRF**: bloquea `localhost`, `127.0.0.1`, `0.0.0.0`, `169.254.x`
+  (link-local), IPs decimales / hex, DNS rebinding.
+- **Method whitelist**: GET / POST / PUT / PATCH / DELETE.
+- **Auth**: Bearer (`Authorization: Bearer ...`) o header custom
+  (`X-API-Key: ...`).
+- **Body cap**: response truncado a 4000 chars antes de pasarlo al LLM.
+- **Timeout**: 60s máx.
+- **Token nunca leakea**: el GET de la tool oculta `auth.token`.
+
+#### UI: visual builder de schema (sin pedir JSON Schema raw al user)
+
+`/dashboard/agents/{id}#customTools` tiene un editor visual: el owner
+agrega filas con nombre + tipo (Texto / Número / Entero / Sí-No) +
+descripción + checkbox "obligatorio". Eso se traduce a JSON Schema
+internamente. Un AI agent externo puede generar este JSON Schema desde
+una descripción en lenguaje natural del user.
+
+### Composio integrations (el owner conecta apps externas con OAuth)
+
+Para conectar el agente a Gmail / Calendar / Sheets / Slack / Notion /
+HubSpot / Stripe / Discord / Telegram / Facebook / Instagram / Messenger
+y +1000 apps del catálogo de Composio. Modelo **session-based** con
+**5 meta-tools** — el LLM no ve los 1000+ slugs sueltos.
+
+#### Modelo de auth — OWNER conecta, NO end-user
+
+Las credenciales son del **owner** del agente (la clínica conecta SU
+calendar; cuando un paciente pide turno, el agente escribe en EL CALENDAR
+DE LA CLÍNICA). Los visitantes nunca ven OAuth flows.
+
+#### Endpoints
+
+```
+GET   /api/integrations/toolkits                                  — catálogo público de toolkits soportados
+GET   /api/agents/{id}/toolkits                                   — estado por toolkit del agente (connected, pending, etc.)
+POST  /api/agents/{id}/toolkits/{slug}/connect                    — inicia OAuth → devuelve {redirect_url}
+DELETE /api/agents/{id}/toolkits/{slug}/connection                — desconecta + revoca
+PATCH /api/agents/{id}/toolkits/{slug}                            — toggle is_active
+
+GET   /api/integrations/oauth/callback?connectedAccountId=&agent_id=&slug=
+                                                                  — callback (Composio redirige acá)
+POST  /api/integrations/composio/webhook                          — receiver triggers Composio
+GET/POST /api/integrations/meta/webhook                           — receiver Meta directo (FB/IG/Messenger)
+POST  /api/integrations/telegram/webhook/{agent_id}               — receiver Telegram
+```
+
+#### Flujo OAuth (3 pasos)
+
+```
+1. POST /api/agents/{id}/toolkits/gmail/connect
+   → response: { redirect_url: "https://accounts.google.com/o/oauth/..." }
+
+2. Frontend hace window.location = redirect_url
+   → user autoriza con su Google
+
+3. Composio redirige a /api/integrations/oauth/callback?...
+   → backend marca connection_status='connected' + populates page_ids (Meta)
+   → redirect al panel del agente con banner verde
+```
+
+#### Catálogo de toolkits soportados (25+ apps)
+
+```
+Mensajería:  whatsapp (vía Kapso, no Composio), telegram, discord, slack
+Email:       gmail, outlook
+Calendar:    googlecalendar, googlemeet
+Spreads:     googlesheets, excel
+Files:       googledrive, googledocs, googleslides, googleforms,
+             googletasks, onedrive
+Productiv.:  notion, airtable, linear, github, youtube
+M365:        microsoft_teams
+CRM:         hubspot
+Pagos:       stripe
+Analytics:   google_analytics
+Meta:        facebook (cubre Pages + IG Business + Messenger en 1 OAuth)
+```
+
+#### Meta-tools que ve el LLM (5 funciones, no 1000)
+
+```
+COMPOSIO_SEARCH_TOOLS        — búsqueda semántica de actions ("send email")
+COMPOSIO_GET_TOOL_SCHEMAS    — schema detallado de una action
+COMPOSIO_MULTI_EXECUTE_TOOL  — ejecuta 1+ actions en paralelo
+COMPOSIO_REMOTE_WORKBENCH    — Python sandbox para post-processing
+COMPOSIO_REMOTE_BASH_TOOL    — bash para data extraction
+```
+
+#### Billing ×5 markup
+
+Composio cobra por execute_action upstream (~$0.0008 Sheets, ~$0.0012
+Gmail, ~$0.0010 Calendar). Chatia aplica ×5 markup → cliente paga
+~$0.004-$0.006 por action. Pre-flight checkea balance antes de ejecutar.
+
+#### Triggers (push de eventos entrantes)
+
+Para los toolkits que SÍ exponen Triggers (Slack, Gmail, GitHub),
+Composio postea eventos a `POST /api/integrations/composio/webhook`
+firmados con HMAC. Discovery dinámico por patrones de naming
+(`NEW_*MESSAGE`, `MESSAGE_RECEIVED`, etc.) — sin hardcodeo de slugs.
+
+### Meta direct webhooks (FB / IG / Messenger inbound)
+
+Composio expone **Triggers=0 para Meta toolkits**. Los comments en
+posts FB / DMs Messenger / DMs IG llegan vía webhooks **directo de
+Meta** a Chatia, no via Composio.
+
+#### Arquitectura multi-tenant
+
+```
+PLATAFORMA (1 vez, por chatia)        CLIENTES (cada owner)
+─────────────────────────────         ──────────────────────────
+developers.facebook.com                /dashboard/agents/X#integrations
+  ├── 1 Meta App                        ├── Click "Conectar Facebook"
+  ├── webhook URL                       ├── OAuth con TU Meta App
+  ├── App Review aprobada               │   (managed por Composio
+  └── App Secret en env                 │    con custom OAuth)
+                                        ├── Eligen sus Pages
+composio.dev dashboard                  └── Listo. Sus eventos
+  └── Auth Config Facebook                  llegan a chatia.pro
+      "Use custom OAuth"
+        ├── Meta App ID
+        └── Meta App Secret
+```
+
+Una sola Meta App recibe events de TODAS las Pages que clientes
+autoricen via OAuth. Cada event payload trae `entry[].id = page_id`
+que Chatia rutea al `agent_id` que tenga esa Page conectada
+(`agent_toolkits.metadata_json.page_ids`).
+
+#### Auto-subscribe Pages al webhook
+
+Después del OAuth, Chatia llama `FACEBOOK_LIST_MANAGED_PAGES` para
+descubrir Pages, persiste sus IDs + access_tokens, y suscribe
+automáticamente cada Page al webhook de la Meta App con
+`POST graph.facebook.com/v19.0/{page_id}/subscribed_apps?subscribed_fields=feed,messages,messaging_postbacks`.
+Cliente NO tiene que entrar a Meta Business → Webhook Subscriptions
+manualmente.
+
+#### Flow del event entrante
+
+```
+1. Visitante comenta en post FB / manda DM a Page
+2. Meta hace POST /api/integrations/meta/webhook (HMAC X-Hub-Signature-256)
+3. verify_meta_signature() valida con META_APP_SECRET
+4. process_meta_webhook() rutea entry.id → agent_toolkit (page_ids[])
+5. Construye trigger slug sintético:
+   FACEBOOK_NEW_PAGE_COMMENT / MESSENGER_NEW_MESSAGE /
+   INSTAGRAM_NEW_DM / INSTAGRAM_NEW_COMMENT
+6. dispatch_event() → run_public_agent (synthetic prompt)
+7. Agente responde via COMPOSIO_MULTI_EXECUTE_TOOL con la action
+   correspondiente:
+     · FACEBOOK_CREATE_COMMENT (object_id en formato pageId_commentId)
+     · FACEBOOK_SEND_MESSAGE
+     · INSTAGRAM_REPLY_TO_COMMENT
+     · INSTAGRAM_SEND_DIRECT_MESSAGE
+```
+
+#### Filtros importantes
+
+- Skipea `sender.id == page.id` o comentario de la propia Page
+  (anti-loop del agente respondiéndose a sí mismo).
+- Skipea `verb != "add"` o `item != "comment"` en field=feed (ignora
+  edits/reactions, solo procesa comments nuevos).
+
+#### Costo del modelo
+
+| Evento | Cobro |
+|---|---|
+| Cliente conecta FB/IG/Messenger | $0 |
+| Llega comment / DM (Meta empuja) | $0 (Meta no cobra webhooks) |
+| Agente RESPONDE | markup ×5 sobre Composio action (`FACEBOOK_SEND_MESSAGE` ~$0.005, etc.) |
+| Conexión inactiva (nadie escribe) | $0 absoluto |
+
+A diferencia del polling (fee fijo aunque no haya eventos), el modelo
+webhook escala con USO real.
+
+### Telegram direct webhooks (mismo patrón que Meta)
+
+Telegram tampoco tiene Composio Triggers. Endpoint
+`POST /api/integrations/telegram/webhook/{agent_id}` con verify de
+header `X-Telegram-Bot-Api-Secret-Token`.
+
+**Setup manual del owner**: Composio NO expone setWebhook como tool.
+El owner debe ejecutar `curl https://api.telegram.org/bot<TOKEN>/setWebhook?url=...&secret_token=...`
+manualmente. Chatia guarda el secret_token + webhook_url en
+`metadata_json` para validar firma de webhooks entrantes.
 
 ### Builder — crear y EDITAR el agente conversando
 
